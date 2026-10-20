@@ -1,23 +1,55 @@
 'use client';
 
 import React, { useState } from 'react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase-browser';
 
 export default function LoginForm() {
+  const router = useRouter();
   const [role, setRole] = useState<'student' | 'lecturer' | 'admin'>('student');
-  const [email, setEmail] = useState('21520104@gm.uit.edu.vn');
-  const [password, setPassword] = useState('SecureOralPass2025#');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage('');
+    setLoading(true);
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: password,
+      });
+
+      if (error) {
+        if (error.message.includes('Invalid login credentials')) {
+          setErrorMessage('Email hoặc mật khẩu không chính xác. Vui lòng kiểm tra lại.');
+        } else if (error.message.includes('Email not confirmed')) {
+          setErrorMessage('Tài khoản chưa được xác nhận email. Hãy kiểm tra cài đặt trong Supabase Auth.');
+        } else {
+          setErrorMessage(error.message || 'Đăng nhập thất bại. Vui lòng thử lại.');
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (data.session) {
+        // Đăng nhập thành công, chuyển hướng vào trang quản lý công việc
+        router.push('/tasks');
+      }
+    } catch {
+      setErrorMessage('Không thể kết nối đến máy chủ xác thực. Kiểm tra mạng hoặc biến môi trường .env.local.');
+      setLoading(false);
+    }
   };
 
   return (
     <main className="min-h-screen w-full flex flex-col lg:flex-row bg-[#f9f9ff] text-[#111c2d] font-sans antialiased">
-      {/* CỘT TRÁI: Branding & Storytelling */}
+      {/* CỘT TRÁI: Branding & Storytelling theo thiết kế Stitch */}
       <section className="lg:w-1/2 w-full bg-gradient-to-br from-[#1E1B4B] via-[#241E66] to-[#312E81] text-white p-8 lg:p-12 xl:p-16 flex flex-col justify-between relative overflow-hidden">
-        {/* Glow ambient */}
         <div className="absolute -top-24 -left-24 w-96 h-96 rounded-full bg-[#6029c9]/30 blur-3xl pointer-events-none" />
         <div className="absolute bottom-10 right-0 w-80 h-80 rounded-full bg-[#4338ca]/40 blur-3xl pointer-events-none" />
 
@@ -102,7 +134,7 @@ export default function LoginForm() {
         </div>
       </section>
 
-      {/* CỘT PHẢI: Form Đăng nhập mẫu */}
+      {/* CỘT PHẢI: Form Đăng nhập Supabase Auth thật */}
       <section className="lg:w-1/2 w-full bg-white flex items-center justify-center p-6 sm:p-10 lg:p-14">
         <div className="w-full max-w-md space-y-6">
           <div>
@@ -110,10 +142,10 @@ export default function LoginForm() {
               🛡️ HỆ THỐNG KHẢO THÍ CHÍNH THỨC
             </div>
             <h1 className="text-3xl font-bold text-[#111c2d] tracking-tight">Đăng nhập</h1>
-            <p className="text-sm text-[#464554] mt-1">Chào mừng bạn quay trở lại với Việc học của tôi</p>
+            <p className="text-sm text-[#464554] mt-1">Đăng nhập tài khoản để quản lý Việc học của tôi</p>
           </div>
 
-          {/* Role selector */}
+          {/* Chọn vai trò */}
           <div>
             <label className="block text-xs font-semibold text-[#464554] mb-2">Vai trò truy cập của bạn</label>
             <div className="grid grid-cols-3 p-1 rounded-xl bg-[#f0f3ff] border border-[#c7c4d7]/60">
@@ -147,11 +179,19 @@ export default function LoginForm() {
             </div>
           </div>
 
-          {/* Form */}
+          {/* Hiển thị lỗi xác thực nếu có */}
+          {errorMessage && (
+            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 flex items-center gap-2">
+              <span>⚠️</span>
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
+          {/* Form nhập tài khoản */}
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div>
               <label className="block text-sm font-medium text-[#111c2d] mb-1.5" htmlFor="email-input">
-                Email trường <span className="text-[#ba1a1a]">*</span>
+                Email tài khoản <span className="text-[#ba1a1a]">*</span>
               </label>
               <input
                 id="email-input"
@@ -160,10 +200,10 @@ export default function LoginForm() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full rounded-lg border border-[#c7c4d7] bg-white px-3.5 py-2.5 text-sm text-[#111c2d] placeholder-[#777586] focus:border-[#2a14b4] focus:ring-2 focus:ring-[#2a14b4]/20 outline-none transition-colors"
-                placeholder="2152xxxx@gm.uit.edu.vn"
+                disabled={loading}
+                className="w-full rounded-lg border border-[#c7c4d7] bg-white px-3.5 py-2.5 text-sm text-[#111c2d] placeholder-[#777586] focus:border-[#2a14b4] focus:ring-2 focus:ring-[#2a14b4]/20 outline-none transition-colors disabled:opacity-50"
+                placeholder="usera@gm.uit.edu.vn"
               />
-              <p className="mt-1 text-xs text-[#464554]">Định dạng @uit.edu.vn hoặc @gm.uit.edu.vn</p>
             </div>
 
             <div>
@@ -178,13 +218,15 @@ export default function LoginForm() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="w-full rounded-lg border border-[#c7c4d7] bg-white px-3.5 py-2.5 pr-12 text-sm text-[#111c2d] placeholder-[#777586] focus:border-[#2a14b4] focus:ring-2 focus:ring-[#2a14b4]/20 outline-none transition-colors"
+                  disabled={loading}
+                  className="w-full rounded-lg border border-[#c7c4d7] bg-white px-3.5 py-2.5 pr-12 text-sm text-[#111c2d] placeholder-[#777586] focus:border-[#2a14b4] focus:ring-2 focus:ring-[#2a14b4]/20 outline-none transition-colors disabled:opacity-50"
                   placeholder="••••••••••••"
                 />
                 <button
                   type="button"
                   aria-label="Hiện hoặc ẩn mật khẩu"
                   onClick={() => setShowPassword(!showPassword)}
+                  disabled={loading}
                   className="absolute inset-y-0 right-0 px-3 flex items-center text-xs text-[#777586] hover:text-[#111c2d]"
                 >
                   {showPassword ? 'Ẩn' : 'Hiện'}
@@ -194,39 +236,22 @@ export default function LoginForm() {
 
             <button
               type="submit"
-              className="w-full h-11 rounded-lg bg-[#2a14b4] hover:bg-[#372abf] text-white text-sm font-semibold shadow-md transition-all active:scale-[0.99] flex items-center justify-center gap-2"
+              disabled={loading}
+              className="w-full h-11 rounded-lg bg-[#2a14b4] hover:bg-[#372abf] text-white text-sm font-semibold shadow-md transition-all active:scale-[0.99] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <span>Đăng nhập ngay</span>
-              <span>→</span>
+              {loading ? (
+                <span>Đang xác thực...</span>
+              ) : (
+                <>
+                  <span>Đăng nhập ngay</span>
+                  <span>→</span>
+                </>
+              )}
             </button>
           </form>
 
-          {/* SSO Office 365 mẫu */}
-          <div className="relative my-4">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-[#c7c4d7]" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="bg-white px-3 text-[#464554]">Hoặc chứng thực qua cổng trường</span>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            className="w-full h-11 flex items-center justify-center gap-2.5 rounded-lg border border-[#c7c4d7] bg-white hover:bg-[#f0f3ff] text-[#111c2d] text-xs font-semibold transition-all shadow-sm"
-          >
-            <span>Đăng nhập bằng Microsoft Office 365 (Email UIT)</span>
-          </button>
-
-          {/* Đường dẫn xem giao diện công việc theo yêu cầu Bài 1 */}
-          <div className="pt-3 text-center border-t border-gray-100">
-            <Link
-              href="/tasks"
-              className="text-xs font-semibold text-[#2a14b4] hover:underline inline-flex items-center gap-1"
-            >
-              <span>→</span>
-              <span>Xem giao diện công việc</span>
-            </Link>
+          <div className="pt-2 text-center text-xs text-[#464554]">
+            Hệ thống kết nối xác thực qua Supabase Auth (Bài thực hành 2)
           </div>
         </div>
       </section>

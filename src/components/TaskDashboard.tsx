@@ -1,41 +1,32 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase-browser';
 
 export interface TaskItemData {
   id: string;
   title: string;
   is_done: boolean;
-  score: number;
-  duration: number;
-  keywords: string[];
-  rubric: string;
+  created_at?: string;
+  score?: number;
+  duration?: number;
+  keywords?: string[];
+  rubric?: string;
 }
 
-const initialTasks: TaskItemData[] = [
-  {
-    id: '1',
-    title: 'So sánh cơ chế lưu trữ trình duyệt & XSS',
-    is_done: false,
-    score: 3.5,
-    duration: 90,
-    keywords: ['Cơ chế lưu trữ', 'Lifespan', 'Dung lượng ~4KB vs 5MB', 'HttpOnly, XSS'],
-    rubric: 'Nêu rõ Cookie gửi tự động kèm request HTTP (~4KB). LocalStorage lưu trữ vĩnh viễn (~5MB). Không lưu JWT trong LocalStorage vì nguy cơ XSS.',
-  },
-  {
-    id: '2',
-    title: 'Giải thích nguyên lý Virtual DOM trong React và cách tối ưu re-render',
-    is_done: true,
-    score: 3.5,
-    duration: 90,
-    keywords: ['Virtual DOM', 'Reconciliation', 'Memoization'],
-    rubric: 'Trình bày đúng cơ chế Diffing algorithm và cách sử dụng useMemo, useCallback để tránh re-render thừa.',
-  },
-];
-
 export default function TaskDashboard() {
-  // State danh sách công việc / câu hỏi
-  const [tasks, setTasks] = useState<TaskItemData[]>(initialTasks);
+  const router = useRouter();
+
+  // State xác thực & phiên người dùng
+  const [userEmail, setUserEmail] = useState<string>('');
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
+
+  // State danh sách công việc (lấy thật từ Supabase qua API)
+  const [tasks, setTasks] = useState<TaskItemData[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [filter, setFilter] = useState<'all' | 'pending' | 'completed'>('all');
 
   // State thêm mới
@@ -43,7 +34,7 @@ export default function TaskDashboard() {
   const [addError, setAddError] = useState('');
 
   // State chỉnh sửa
-  const [editingId, setEditingId] = useState<string | null>('1');
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editError, setEditError] = useState('');
 
@@ -52,8 +43,104 @@ export default function TaskDashboard() {
   const [deadline, setDeadline] = useState('23:59 - 25/11/2026');
   const [maxRetakes, setMaxRetakes] = useState('3');
 
-  // 1. Thêm mới có validate 1-120 ký tự sau trim
-  const handleAddTask = (e: React.FormEvent) => {
+  // Helper gọi API có tự động đính kèm Access Token của người dùng
+  const apiFetch = useCallback(async (endpoint: string, options: RequestInit = {}) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      router.push('/login');
+      throw new Error('Chưa đăng nhập');
+    }
+
+    const headers = new Headers(options.headers || {});
+    headers.set('Authorization', `Bearer ${session.access_token}`);
+    if (options.body && typeof options.body === 'string' && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    const res = await fetch(endpoint, {
+      ...options,
+      headers,
+    });
+
+    if (res.status === 401) {
+      await supabase.auth.signOut();
+      router.push('/login');
+      throw new Error('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
+    }
+
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(json?.error || 'Có lỗi xảy ra từ máy chủ.');
+    }
+
+    return json;
+  }, [router]);
+
+  // Tải danh sách công việc từ backend
+  const loadTasks = useCallback(async () => {
+    setLoading(true);
+    setApiError('');
+    try {
+      const res = await apiFetch('/api/tasks');
+      setTasks(res.data || []);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Không thể tải danh sách công việc.';
+      setApiError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch]);
+
+  // Kiểm tra phiên đăng nhập và lắng nghe sự kiện Auth
+  useEffect(() => {
+    let isMounted = true;
+
+    const checkSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          router.push('/login');
+          return;
+        }
+        if (isMounted) {
+          setUserEmail(session.user?.email || '');
+          setAuthChecking(false);
+          await loadTasks();
+        }
+      } catch {
+        if (isMounted) {
+          router.push('/login');
+        }
+      }
+    };
+
+    checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!session) {
+        setTasks([]);
+        setUserEmail('');
+        router.push('/login');
+      } else if (isMounted) {
+        setUserEmail(session.user?.email || '');
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [router, loadTasks]);
+
+  // Xử lý Đăng xuất
+  const handleSignOut = async () => {
+    setTasks([]);
+    await supabase.auth.signOut();
+    router.push('/login');
+  };
+
+  // 1. Thêm công việc mới: POST /api/tasks
+  const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = newTitle.trim();
     if (trimmed.length < 1 || trimmed.length > 120) {
@@ -61,32 +148,60 @@ export default function TaskDashboard() {
       return;
     }
 
-    const newTask: TaskItemData = {
-      id: Date.now().toString(),
-      title: trimmed,
-      is_done: false,
-      score: 3.0,
-      duration: 90,
-      keywords: ['Thuật ngữ cốt lõi'],
-      rubric: 'Hướng dẫn chấm cho câu hỏi mới...',
-    };
-
-    setTasks([newTask, ...tasks]);
-    setNewTitle('');
+    setIsSubmitting(true);
     setAddError('');
-    setEditingId(newTask.id);
+    try {
+      await apiFetch('/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify({ title: trimmed }),
+      });
+      setNewTitle('');
+      await loadTasks();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi khi thêm công việc.';
+      setAddError(message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  // 2. Toggle hoàn thành
-  const handleToggleTask = (id: string) => {
-    setTasks(tasks.map((t) => (t.id === id ? { ...t, is_done: !t.is_done } : t)));
+  // 2. Đổi trạng thái hoàn thành: PATCH /api/tasks/:id
+  const handleToggleTask = async (id: string, currentDone: boolean) => {
+    setIsSubmitting(true);
+    setApiError('');
+    try {
+      await apiFetch(`/api/tasks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_done: !currentDone }),
+      });
+      await loadTasks();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi khi cập nhật trạng thái.';
+      setApiError(message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  // 3. Xóa có xác nhận (confirm)
-  const handleDeleteTask = (id: string, title: string) => {
-    if (window.confirm(`Bạn có chắc chắn muốn xóa "${title}"?`)) {
-      setTasks(tasks.filter((t) => t.id !== id));
+  // 3. Xóa công việc: DELETE /api/tasks/:id
+  const handleDeleteTask = async (id: string, title: string) => {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa "${title}"?`)) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    setApiError('');
+    try {
+      await apiFetch(`/api/tasks/${id}`, {
+        method: 'DELETE',
+      });
       if (editingId === id) setEditingId(null);
+      await loadTasks();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi khi xóa công việc.';
+      setApiError(message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -97,26 +212,50 @@ export default function TaskDashboard() {
     setEditError('');
   };
 
-  // 5. Lưu sửa
-  const handleSaveEdit = (id: string) => {
+  // 5. Lưu sửa: PATCH /api/tasks/:id
+  const handleSaveEdit = async (id: string) => {
     const trimmed = editTitle.trim();
     if (trimmed.length < 1 || trimmed.length > 120) {
       setEditError('Tên phải từ 1–120 ký tự.');
       return;
     }
 
-    setTasks(tasks.map((t) => (t.id === id ? { ...t, title: trimmed } : t)));
+    setIsSubmitting(true);
     setEditError('');
+    try {
+      await apiFetch(`/api/tasks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: trimmed }),
+      });
+      setEditingId(null);
+      await loadTasks();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi khi lưu chỉnh sửa.';
+      setEditError(message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  // Lọc
+  // Lọc theo trạng thái
   const filteredTasks = tasks.filter((t) => {
     if (filter === 'pending') return !t.is_done;
     if (filter === 'completed') return t.is_done;
     return true;
   });
 
-  const totalScore = tasks.reduce((sum, item) => sum + item.score, 0);
+  const totalScore = tasks.reduce((sum, item) => sum + (item.score ?? 2.5), 0);
+
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-[#f9f9ff] flex items-center justify-center text-sm font-semibold text-[#2a14b4]">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-4 border-[#2a14b4] border-t-transparent rounded-full animate-spin" />
+          <span>Đang xác minh quyền truy cập...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-[#f9f9ff] text-[#111c2d] min-h-screen flex flex-col font-sans antialiased">
@@ -139,12 +278,21 @@ export default function TaskDashboard() {
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-xs px-2.5 py-1 rounded bg-[#dee8ff] text-[#2a14b4] font-semibold border border-[#c7c4d7]/70">
-            Dữ liệu tạm (Lab 1)
-          </span>
-          <div className="w-8 h-8 rounded-full bg-[#4338ca] text-white flex items-center justify-center text-xs font-semibold ring-2 ring-[#dee8ff]">
-            SJ
+          <div className="hidden sm:flex flex-col text-right">
+            <span className="text-xs font-semibold text-[#111c2d] truncate max-w-[180px]">
+              {userEmail || 'Tài khoản'}
+            </span>
+            <span className="text-[10px] text-emerald-600 font-medium">Supabase Auth Connected</span>
           </div>
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs font-semibold hover:bg-red-100 transition-colors focus:outline-none focus:ring-2 focus:ring-red-400"
+            title="Đăng xuất khỏi hệ thống"
+          >
+            Đăng xuất
+          </button>
         </div>
       </header>
 
@@ -207,12 +355,12 @@ export default function TaskDashboard() {
               <nav className="flex items-center gap-2 text-xs text-[#464554] mb-1">
                 <span>Lớp IE104.N21</span>
                 <span>&gt;</span>
-                <span className="text-[#2a14b4] font-semibold">Tạo bài kiểm tra vấn đáp mới</span>
+                <span className="text-[#2a14b4] font-semibold">Quản lý Việc học của tôi</span>
               </nav>
               <div className="flex items-center gap-3">
                 <h1 className="text-xl sm:text-2xl font-bold text-[#111c2d]">Cấu hình Đề thi &amp; Danh sách việc học</h1>
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-[#dee8ff] text-[#2a14b4] border border-[#c7c4d7] font-semibold">
-                  Module 2.4 - Giảng viên
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold">
+                  Lab 2 - Dữ liệu Supabase RLS
                 </span>
               </div>
             </div>
@@ -220,20 +368,33 @@ export default function TaskDashboard() {
             <div className="flex items-center gap-2.5 self-end md:self-auto">
               <button
                 type="button"
-                className="px-3.5 py-2 rounded-lg border border-[#c7c4d7] bg-white text-xs font-semibold hover:bg-[#f0f3ff] focus:outline-none focus:ring-2 focus:ring-[#2a14b4]"
+                onClick={loadTasks}
+                disabled={loading || isSubmitting}
+                className="px-3.5 py-2 rounded-lg border border-[#c7c4d7] bg-white text-xs font-semibold hover:bg-[#f0f3ff] focus:outline-none focus:ring-2 focus:ring-[#2a14b4] disabled:opacity-50"
               >
-                💾 Lưu nháp
-              </button>
-              <button
-                type="button"
-                className="px-4 py-2 rounded-lg bg-[#4338ca] text-white text-xs font-semibold hover:bg-[#2a14b4] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#2a14b4]"
-              >
-                🚀 Xuất bản bài tập
+                🔄 {loading ? 'Đang tải...' : 'Làm mới'}
               </button>
             </div>
           </div>
 
-          {/* BENTO ARCHITECTURE (8/4 COLS) */}
+          {/* Báo lỗi API nếu có */}
+          {apiError && (
+            <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span>⚠️</span>
+                <span>{apiError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setApiError('')}
+                className="text-xs font-bold hover:underline"
+              >
+                Đóng
+              </button>
+            </div>
+          )}
+
+          {/* BENTO ARCHITECTURE */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
             {/* CỘT TRÁI (8 COLS) */}
             <div className="xl:col-span-8 space-y-6">
@@ -241,7 +402,7 @@ export default function TaskDashboard() {
               <section className="bg-white border border-[#c7c4d7] rounded-xl p-5 shadow-sm space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-[#c7c4d7]">
                   <div className="flex items-center gap-2">
-                    <span className="text-[#2a14b4]">⚙️️</span>
+                    <span className="text-[#2a14b4]">⚙️</span>
                     <h2 className="text-sm font-bold text-[#111c2d]">Phần 1: Thông tin chung bài tập</h2>
                   </div>
                   <span className="text-[11px] text-[#464554]">Bắt buộc thiết lập</span>
@@ -294,7 +455,7 @@ export default function TaskDashboard() {
                 </div>
               </section>
 
-              {/* PHẦN 2: DANH SÁCH CÂU HỎI VẤN ĐÁP (CRUD THEO PROMPT) */}
+              {/* PHẦN 2: DANH SÁCH CÂU HỎI VẤN ĐÁP (CRUD API) */}
               <div className="space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
@@ -334,7 +495,7 @@ export default function TaskDashboard() {
                   </div>
                 </div>
 
-                {/* FORM THÊM MỚI (VALIDATE 1–120 KÝ TỰ, BÁO LỖI SÁT Ô NHẬP) */}
+                {/* FORM THÊM MỚI (VALIDATE 1–120 KÝ TỰ, GỌI POST /api/tasks) */}
                 <form onSubmit={handleAddTask} className="p-4 rounded-xl border-2 border-dashed border-[#c7c4d7] bg-white space-y-2">
                   <label htmlFor="new-task-input" className="block text-xs font-bold text-[#111c2d]">
                     Thêm câu hỏi / công việc mới <span className="text-red-500">*</span>
@@ -344,30 +505,38 @@ export default function TaskDashboard() {
                       id="new-task-input"
                       type="text"
                       value={newTitle}
+                      disabled={isSubmitting}
                       onChange={(e) => {
                         setNewTitle(e.target.value);
                         if (addError) setAddError('');
                       }}
                       placeholder="Nhập tên câu hỏi hoặc việc cần làm (1–120 ký tự)..."
-                      className={`flex-1 px-3.5 py-2.5 rounded-lg border bg-[#f9f9ff] text-xs outline-none transition-colors ${
+                      className={`flex-1 px-3.5 py-2.5 rounded-lg border bg-[#f9f9ff] text-xs outline-none transition-colors disabled:opacity-50 ${
                         addError ? 'border-red-500 focus:ring-2 focus:ring-red-200' : 'border-[#c7c4d7] focus:border-[#2a14b4] focus:ring-2 focus:ring-[#2a14b4]/20'
                       }`}
                     />
                     <button
                       type="submit"
-                      className="px-5 py-2.5 rounded-lg bg-[#4338ca] text-white text-xs font-semibold hover:bg-[#2a14b4] shrink-0 focus:outline-none focus:ring-2 focus:ring-[#2a14b4]"
+                      disabled={isSubmitting}
+                      className="px-5 py-2.5 rounded-lg bg-[#4338ca] text-white text-xs font-semibold hover:bg-[#2a14b4] shrink-0 focus:outline-none focus:ring-2 focus:ring-[#2a14b4] disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      + Thêm công việc
+                      {isSubmitting ? 'Đang thêm...' : '+ Thêm công việc'}
                     </button>
                   </div>
                   {addError && <p className="text-[11px] text-red-600 font-medium pl-1">{addError}</p>}
                 </form>
 
-                {/* TRẠNG THÁI RỖNG (EMPTY STATE) */}
-                {filteredTasks.length === 0 ? (
+                {/* LOADING STATE */}
+                {loading ? (
+                  <div className="p-8 text-center rounded-xl border border-[#c7c4d7] bg-white">
+                    <div className="inline-block w-6 h-6 border-2 border-[#2a14b4] border-t-transparent rounded-full animate-spin mb-2" />
+                    <p className="text-xs text-gray-500 font-semibold">Đang đồng bộ dữ liệu từ Supabase...</p>
+                  </div>
+                ) : filteredTasks.length === 0 ? (
+                  /* EMPTY STATE */
                   <div className="p-8 text-center rounded-xl border-2 border-dashed border-[#c7c4d7] bg-white">
                     <p className="text-xs text-gray-500 font-semibold">Chưa có công việc nào trong danh mục này.</p>
-                    <p className="text-[11px] text-gray-400 mt-1">Hãy thêm câu hỏi mới vào form phía trên!</p>
+                    <p className="text-[11px] text-gray-400 mt-1">Hãy nhập tên và bấm nút &quot;+ Thêm công việc&quot; ở trên!</p>
                   </div>
                 ) : (
                   filteredTasks.map((task, index) => {
@@ -391,11 +560,12 @@ export default function TaskDashboard() {
                               id={`check-${task.id}`}
                               type="checkbox"
                               checked={task.is_done}
-                              onChange={() => handleToggleTask(task.id)}
-                              className="w-4 h-4 rounded text-[#2a14b4] focus:ring-[#2a14b4] cursor-pointer"
+                              disabled={isSubmitting}
+                              onChange={() => handleToggleTask(task.id, task.is_done)}
+                              className="w-4 h-4 rounded text-[#2a14b4] focus:ring-[#2a14b4] cursor-pointer disabled:opacity-50"
                             />
                             <span className="w-5 h-5 rounded bg-[#2a14b4] text-white text-[10px] font-mono font-bold flex items-center justify-center shrink-0">
-                              0{index + 1}
+                              {index < 9 ? `0${index + 1}` : index + 1}
                             </span>
                             <span className={`text-xs font-bold truncate ${task.is_done ? 'line-through text-gray-400' : 'text-[#2a14b4]'}`}>
                               {task.title}
@@ -406,14 +576,16 @@ export default function TaskDashboard() {
                             <button
                               type="button"
                               onClick={() => (isExpanded ? setEditingId(null) : handleStartEdit(task))}
-                              className="px-2 py-1 text-xs text-[#464554] hover:text-[#2a14b4] rounded hover:bg-white focus:outline-none focus:ring-1 focus:ring-[#2a14b4]"
+                              disabled={isSubmitting}
+                              className="px-2 py-1 text-xs text-[#464554] hover:text-[#2a14b4] rounded hover:bg-white focus:outline-none focus:ring-1 focus:ring-[#2a14b4] disabled:opacity-50"
                             >
                               ✏️ Sửa
                             </button>
                             <button
                               type="button"
                               onClick={() => handleDeleteTask(task.id, task.title)}
-                              className="px-2 py-1 text-xs text-red-600 hover:text-red-700 rounded hover:bg-red-50 focus:outline-none focus:ring-1 focus:ring-red-400"
+                              disabled={isSubmitting}
+                              className="px-2 py-1 text-xs text-red-600 hover:text-red-700 rounded hover:bg-red-50 focus:outline-none focus:ring-1 focus:ring-red-400 disabled:opacity-50"
                             >
                               🗑️ Xóa
                             </button>
@@ -427,7 +599,7 @@ export default function TaskDashboard() {
                           </div>
                         </div>
 
-                        {/* Thân thẻ câu hỏi khi mở rộng */}
+                        {/* Thân thẻ khi mở rộng sửa */}
                         {isExpanded ? (
                           <div className="p-5 space-y-4 text-xs">
                             <div>
@@ -438,11 +610,12 @@ export default function TaskDashboard() {
                                 id={`edit-text-${task.id}`}
                                 rows={2}
                                 value={editTitle}
+                                disabled={isSubmitting}
                                 onChange={(e) => {
                                   setEditTitle(e.target.value);
                                   if (editError) setEditError('');
                                 }}
-                                className="w-full p-2.5 rounded-lg border border-[#c7c4d7] bg-white outline-none focus:border-[#2a14b4]"
+                                className="w-full p-2.5 rounded-lg border border-[#c7c4d7] bg-white outline-none focus:border-[#2a14b4] disabled:opacity-50"
                               />
                               {editError && <p className="text-[11px] text-red-600 mt-1">{editError}</p>}
                             </div>
@@ -462,7 +635,7 @@ export default function TaskDashboard() {
                                 <div className="flex items-center gap-2">
                                   <input
                                     type="text"
-                                    defaultValue={task.score}
+                                    defaultValue={task.score ?? 2.5}
                                     className="w-14 px-2 py-1 text-center font-bold font-mono border rounded bg-white"
                                   />
                                   <span>/ 10 điểm</span>
@@ -478,7 +651,7 @@ export default function TaskDashboard() {
                               </div>
 
                               <div className="flex flex-wrap gap-1.5">
-                                {task.keywords.map((kw, i) => (
+                                {(task.keywords ?? ['Kiến thức cốt lõi', 'Chuẩn IE104']).map((kw, i) => (
                                   <span key={i} className="px-2 py-1 rounded bg-white border border-[#c7c4d7] text-[11px] flex items-center gap-1">
                                     <span className="text-emerald-600">✓</span> {kw}
                                   </span>
@@ -492,7 +665,7 @@ export default function TaskDashboard() {
                                 <textarea
                                   id={`rubric-${task.id}`}
                                   rows={3}
-                                  defaultValue={task.rubric}
+                                  defaultValue={task.rubric ?? 'Đối chiếu nội dung phát biểu với từ khóa chuẩn barem.'}
                                   className="w-full p-2.5 rounded-lg border border-[#c7c4d7] bg-white text-[11px]"
                                 />
                               </div>
@@ -502,16 +675,18 @@ export default function TaskDashboard() {
                               <button
                                 type="button"
                                 onClick={() => setEditingId(null)}
-                                className="px-3 py-1.5 rounded-lg border border-[#c7c4d7] bg-white font-medium focus:outline-none focus:ring-1 focus:ring-gray-400"
+                                disabled={isSubmitting}
+                                className="px-3 py-1.5 rounded-lg border border-[#c7c4d7] bg-white font-medium focus:outline-none focus:ring-1 focus:ring-gray-400 disabled:opacity-50"
                               >
                                 Thu gọn
                               </button>
                               <button
                                 type="button"
                                 onClick={() => handleSaveEdit(task.id)}
-                                className="px-4 py-1.5 rounded-lg bg-[#2a14b4] text-white font-semibold shadow-sm hover:bg-[#4338ca] focus:outline-none focus:ring-2 focus:ring-[#2a14b4]"
+                                disabled={isSubmitting}
+                                className="px-4 py-1.5 rounded-lg bg-[#2a14b4] text-white font-semibold shadow-sm hover:bg-[#4338ca] focus:outline-none focus:ring-2 focus:ring-[#2a14b4] disabled:opacity-50"
                               >
-                                Lưu thay đổi
+                                {isSubmitting ? 'Đang lưu...' : 'Lưu thay đổi'}
                               </button>
                             </div>
                           </div>
@@ -554,8 +729,8 @@ export default function TaskDashboard() {
                   </div>
                 </div>
 
-                <div className="p-2.5 bg-[#f0f3ff] rounded-lg border border-[#c7c4d7] text-[11px] text-[#464554]">
-                  💡 Dữ liệu lưu trong <strong>React State</strong> (Bộ nhớ tạm của Bài 1). Reload trang sẽ hoàn nguyên về mẫu ban đầu.
+                <div className="p-2.5 bg-emerald-50 rounded-lg border border-emerald-200 text-[11px] text-emerald-800">
+                  ✅ Dữ liệu được lưu trữ thật trên <strong>Supabase PostgreSQL</strong> qua Next.js API Routes với RLS.
                 </div>
               </div>
 
